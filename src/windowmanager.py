@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 import logging
 import mss
+import numpy as np
 import os
+import pyautogui
 import psutil
 import subprocess
 import win32api
@@ -19,43 +21,107 @@ def is_game_running(game_exe: str) -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             pass
     return False
+def start_game(game_exe: str, game_path: str) -> None:
+    if not is_game_running(game_exe):
+        subprocess.Popen(game_path)
 
 
 
-def bring_game_to_front(hwnd: int) -> None:
-    try:
+def is_game_front(game_name: str) -> bool:
+    return win32gui.GetWindowText(win32gui.GetForegroundWindow()) == game_name
+def focus_game_window(game_name: str, hwnd: int) -> None:
+    if not is_game_front(game_name):
+        pyautogui.press("alt")
         win32gui.SetForegroundWindow(hwnd)
-    except Exception as e:
-        logging.info("Failed to bring game to front")
 
 
 
-def move_window_to_left(hwnd: int, screen_width: int, screen_height: int) -> None:
-    win32gui.MoveWindow(hwnd, -7, 0, screen_width//2 + 14, screen_height - 40, True)
+def is_game_left(hwnd: int) -> bool:
+    dims = win32gui.GetWindowRect(hwnd)
+    return dims == (-8, 0, 1288, 1388)
+def move_game_left(hwnd: int) -> bool:
+    if not is_game_left(hwnd):
+        win32gui.MoveWindow(hwnd, -8, 0, 1296, 1388, True)
 
 
 
-def window_handler(game_path: str):
-    game_name = game_path.split('\\')[-1].split('.')[0]
+
+# load_dotenv()
+# game_path = os.getenv("GAME_PATH")
+# game_name = game_path.split('\\')[-1].split('.')[0]
+# game_exe = game_path.split('\\')[-1]
+# hwnd = win32gui.FindWindow(None, game_name)
+# is_game_left(hwnd)
+# win32gui.MoveWindow(hwnd, -8, 0, 1296, 1388, True)
+# is_game_left(hwnd)
+# screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+# screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+# print(screen_width, screen_height)
+
+
+
+
+def window_handler(game_path: str) -> None:
+    game_name = game_path.split('\\')[-1].split(".")[0]
     game_exe = game_path.split('\\')[-1]
-    screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
-    screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+
     while True:
-        if not is_game_running(game_exe):
-            logging.info("Game not running. Starting game")
-            subprocess.Popen(game_path)
-            time.sleep(2)
-        foreground_hwnd = win32gui.GetForegroundWindow()
-        foreground_window_title = win32gui.GetWindowText(foreground_hwnd)
-        if foreground_window_title != game_name:
-            logging.info("Game not in focus. Moving to front and placing in left half")
+        try:
+            start_game(game_exe, game_path)
             hwnd = win32gui.FindWindow(None, game_name)
-            if hwnd:
-                bring_game_to_front(hwnd)
-                move_window_to_left(hwnd, screen_width, screen_height)
-            else:
-                window_handler(game_path)
-        time.sleep(1)  # Check every second
+            focus_game_window(game_name, hwnd)
+            move_game_left(hwnd)
+            with mss.mss() as sct:
+                corner = np.array(sct.grab({
+                    "left": 2,
+                    "top": 2,
+                    "width": 1,
+                    "height": 1
+                }))
+                corner = corner[..., :3]
+                if np.all(corner == 255):
+                    print("Top-left corner is white")
+                    win32gui.MoveWindow(hwnd, -7, 0, 1296, 1388, True)
+                    continue
+            if is_game_running(game_exe) and is_game_front(game_name) and is_game_left(hwnd):
+                return
+        except Exception as e:
+            logging.error("Error handling window: %s", e)
+
+
+
+
+    # while True:
+    #     try:
+    #         if not is_game_running(game_exe):
+    #             logging.info("Game not running. Starting game")
+    #             subprocess.Popen(game_path)
+    #         if win32gui.GetWindowText(win32gui.GetForegroundWindow()) != game_name:
+    #             logging.info("Game not in focus. Moving to front and placing in left half")
+    #             hwnd = win32gui.FindWindow(None, game_name)
+    #             if hwnd:
+    #                 bring_game_to_front(hwnd)
+    #         while True:
+    #             move_window_to_left(hwnd, screen_width, screen_height)
+    #             with mss.mss() as sct:
+    #                 corner = np.array(sct.grab({
+    #                     "left": 2,
+    #                     "top": 2,
+    #                     "width": 1,
+    #                     "height": 1
+    #                 }))
+    #                 corner = corner[..., :3]
+    #             if np.all(corner != 255):
+    #                 break
+    #         # return True
+    #     except Exception as e:
+    #         logging.error("Error handling window: %s", e)
+    #         return False
+    #     # time.sleep(1)
+
+
+
+
 
 
 

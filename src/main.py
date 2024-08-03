@@ -26,9 +26,19 @@ gameover_template = torch.tensor(np.load("gameover.npy")).squeeze(0)
 
 
 
-
-# load templates for score recognition
 def load_templates():
+    """
+    Load the templates for the score.
+
+    This function loads the templates for the score by reading the PNG files from the assets directory.
+    It iterates over the range of 10 and constructs the file path for each template using the current index.
+    The template is then read using OpenCV's `imread` function with the flag `cv2.IMREAD_GRAYSCALE` to load it as a grayscale image.
+    The loaded template is appended to the `templates` list.
+    Finally, the function returns the list of templates.
+
+    Returns:
+        templates (List[np.ndarray]): A list of templates loaded from the assets directory.
+    """
     templates = []
     for i in range(10):
         template_path = os.path.join("..\\assets\\", f"{i}.png")
@@ -38,8 +48,22 @@ def load_templates():
 
 
 
-# capture left split screen using mss
 def capture_screen() -> list[np.ndarray]:
+    """
+    Captures a screenshot of the screen using the `mss` library and returns a list of two numpy arrays.
+
+    This function uses the `mss` library to capture a screenshot of the screen. It specifies the dimensions of the screenshot by providing the left, top, width, and height coordinates. The screenshot is then converted to a numpy array using the `np.array` function. The resulting array is sliced to extract the RGB values of the pixels, excluding the alpha channel.
+
+    The function returns a list containing two numpy arrays:
+    - The first array represents the full screenshot, including the alpha channel.
+    - The second array represents the RGB values of the pixels, excluding the alpha channel.
+
+    Parameters:
+    None
+
+    Returns:
+    list[np.ndarray]: A list containing two numpy arrays: the full screenshot and the RGB values of the pixels.
+    """
     with mss.mss() as sct:
 
         # width of borders: 2px
@@ -153,8 +177,26 @@ def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
 
 
 
-# take actions with pyautogui
 def take_action(action) -> None:
+    """
+    Takes an action based on the given input.
+
+    Args:
+        action (int): The action to be taken.
+            - 0: Presses the "up" key and increments the current score by 1.
+            - 1: Presses the "down" key and decrements the current score by 1.
+            - 2: Presses the "left" key.
+            - 3: Presses the "right" key.
+            - 4: Sleeps for 0.1 seconds.
+            - 5: Presses the "space" key.
+            - Any other value: Logs a warning message indicating an invalid action.
+
+    Returns:
+        None
+
+    Raises:
+        None
+    """
     global curr_score
     if action == 0:
         pyautogui.press("up")
