@@ -23,6 +23,13 @@ import win32gui
 
 
 
+
+
+
+
+
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 gameover_template = torch.tensor(np.load("gameover.npy")).squeeze(0)
@@ -52,21 +59,6 @@ def load_templates():
 
 
 def capture_screen() -> list[np.ndarray]:
-    """
-    Captures a screenshot of the screen using the `mss` library and returns a list of two numpy arrays.
-
-    This function uses the `mss` library to capture a screenshot of the screen. It specifies the dimensions of the screenshot by providing the left, top, width, and height coordinates. The screenshot is then converted to a numpy array using the `np.array` function. The resulting array is sliced to extract the RGB values of the pixels, excluding the alpha channel.
-
-    The function returns a list containing two numpy arrays:
-    - The first array represents the full screenshot, including the alpha channel.
-    - The second array represents the RGB values of the pixels, excluding the alpha channel.
-
-    Parameters:
-    None
-
-    Returns:
-    list[np.ndarray]: A list containing two numpy arrays: the full screenshot and the RGB values of the pixels.
-    """
     with mss.mss() as sct:
 
         # width of borders: 2px
@@ -181,25 +173,6 @@ def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
 
 
 def take_action(action) -> None:
-    """
-    Takes an action based on the given input.
-
-    Args:
-        action (int): The action to be taken.
-            - 0: Presses the "up" key and increments the current score by 1.
-            - 1: Presses the "down" key and decrements the current score by 1.
-            - 2: Presses the "left" key.
-            - 3: Presses the "right" key.
-            - 4: Sleeps for 0.1 seconds.
-            - 5: Presses the "space" key.
-            - Any other value: Logs a warning message indicating an invalid action.
-
-    Returns:
-        None
-
-    Raises:
-        None
-    """
     global curr_score
     if action == 0:
         pyautogui.press("up")
@@ -225,105 +198,14 @@ def take_action(action) -> None:
 
 
 
-class QNetwork(nn.Module):
-    def __init__(self, state_size, action_size):
-        super(QNetwork, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-
-        # self.conv1 = nn.Conv2d(state_size[2], 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc1 = nn.Linear(64 * 7 * 7, 512)
-        self.fc2 = nn.Linear(512, action_size)
-
-    def forward(self, x):
-        if x.dim() == 3:
-            x = x.unsqueeze(1)
-        x = x.float() / 255.0
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
 
 
 
 
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.memory = deque(maxlen=capacity)
-    
-    def push(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-    
-    def __len__(self):
-        return len(self.memory)
 
 
 
-class DQNAgent:
-    def __init__(self, state_size, action_size, batch_size, gamma, epsilon, epsilon_min, epsilon_decay, learning_rate, memory_capacity, target_update_freq):
-        self.state_size = state_size
-        self.action_size = action_size
-        self.batch_size = batch_size
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.learning_rate = learning_rate
-        self.memory = ReplayMemory(memory_capacity)
-        self.policy_net = QNetwork(state_size, action_size).to(device)
-        self.target_net = QNetwork(state_size, action_size).to(device)
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.target_net.eval()
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
-        self.target_update_freq = target_update_freq
-        self.steps_done = 0
-    
-    def select_action(self, state):
-        sample = random.random()
-        eps_threshold = self.epsilon_min + (self.epsilon - self.epsilon_min) * np.exp(-1. * self.steps_done / self.epsilon_decay)
-        # print(self.epsilon_min, self.epsilon, self.epsilon_decay, self.steps_done)
-        # print(eps_threshold)
-        self.steps_done += 1
-        if sample > eps_threshold:
-            with torch.no_grad():
-                return self.policy_net(state).max(1)[1].view(1, 1)
-        else:
-            return torch.tensor([[random.randrange(self.action_size)]], device=device, dtype=torch.long)
-    
-    def optimize_model(self):
-        if len(self.memory) < self.batch_size:
-            return
-        transitions = self.memory.sample(self.batch_size)
-        batch = list(zip(*transitions))
-        
-        state_batch = torch.cat(batch[0]).unsqueeze(1)
-        action_batch = torch.cat(batch[1])
-        reward_batch = torch.cat(batch[2])
-        next_state_batch = torch.cat(batch[3]).unsqueeze(1)
-        done_batch = torch.cat(batch[4])
 
-        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
-        
-        next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
-        expected_state_action_values = (next_state_values * self.gamma * (1 - done_batch)) + reward_batch
-        
-        loss = F.mse_loss(state_action_values, expected_state_action_values.unsqueeze(1))
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        for param in self.policy_net.parameters():
-            param.grad.data.clamp_(-1, 1)
-        self.optimizer.step()
-    
-    def update_target_network(self):
-        self.target_net.load_state_dict(self.policy_net.state_dict())
 
 
 
@@ -390,6 +272,127 @@ def reset_game(game_path: str) -> None:
 
 
 
+
+
+class QNetwork(nn.Module):
+    def __init__(self, state_size, action_size, num_frames=4):
+        super(QNetwork, self).__init__()
+        self.conv1 = nn.Conv2d(num_frames, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.fc1 = nn.Linear(64 * 7 * 7, 512)
+        self.fc2 = nn.Linear(512, action_size)
+
+    def forward(self, x):
+        x = x.float() / 255.0
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+    
+
+
+
+
+class ReplayMemory:
+    def __init__(self, capacity):
+        self.memory = deque(maxlen=capacity)
+   
+    def push(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+   
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+   
+    def __len__(self):
+        return len(self.memory)
+
+
+
+
+
+    
+
+class DQNAgent:
+    def __init__(self, state_size, action_size, batch_size, gamma, epsilon, epsilon_min, epsilon_decay, learning_rate, memory_capacity, target_update_freq, num_frames=4):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.learning_rate = learning_rate
+        self.eps_threshold = 1
+        self.memory = ReplayMemory(memory_capacity)
+        self.policy_net = QNetwork(state_size, action_size, num_frames).to(device)
+        self.target_net = QNetwork(state_size, action_size, num_frames).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.target_update_freq = target_update_freq
+        self.steps_done = 0
+        self.num_frames = num_frames
+   
+    def select_action(self, state):
+        sample = random.random()
+        self.eps_threshold = self.epsilon_min + (self.epsilon - self.epsilon_min) * np.exp(-1. * self.steps_done / self.epsilon_decay)
+        self.steps_done += 1
+        if sample > self.eps_threshold:
+            with torch.no_grad():
+                return self.policy_net(state).max(1)[1].view(1, 1)
+        else:
+            return torch.tensor([[random.randrange(self.action_size)]], device=device, dtype=torch.long)
+   
+    def optimize_model(self):
+        if len(self.memory) < self.batch_size:
+            return
+        transitions = self.memory.sample(self.batch_size)
+        batch = list(zip(*transitions))
+       
+        state_batch = torch.cat(batch[0])
+        action_batch = torch.cat(batch[1])
+        reward_batch = torch.cat(batch[2])
+        next_state_batch = torch.cat(batch[3])
+        done_batch = torch.cat(batch[4])
+        
+        state_action_values = self.policy_net(state_batch).gather(1, action_batch)
+       
+        next_state_values = self.target_net(next_state_batch).max(1)[0].detach()
+        expected_state_action_values = (next_state_values * self.gamma * (1 - done_batch)) + reward_batch
+       
+        loss = F.mse_loss(state_action_values, expected_state_action_values.unsqueeze(1))
+       
+        self.optimizer.zero_grad()
+        loss.backward()
+        for param in self.policy_net.parameters():
+            param.grad.data.clamp_(-1, 1)
+        self.optimizer.step()
+   
+    def update_target_network(self):
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+
+
+
+
+
+
+# Frame stacking function
+def stack_frames(stacked_frames, frame, num_frames=4):
+    stacked_frames.append(frame)
+    return torch.cat(list(stacked_frames)).unsqueeze(0)
+
+
+
+
+
+
+
+
 # hyperparameters
 state_size = (1, 84, 84)  # (channels, height, width)
 action_size = 5
@@ -401,10 +404,9 @@ epsilon_decay = 100
 learning_rate = 0.005
 memory_capacity = 10_000    
 target_update_freq = 10 
+num_frames = 4
 
-agent = DQNAgent(state_size, action_size, batch_size, gamma, epsilon, epsilon_min, epsilon_decay, learning_rate, memory_capacity, target_update_freq)
 
-num_episodes = 1_000
 
 actions = ["up", "down", "left", "right", "wait"]
 
@@ -412,76 +414,98 @@ templates = load_templates()
 
 load_dotenv()
 GAME_PATH = os.getenv("GAME_PATH")
-crash_check = deque(maxlen=5)
+crashed = 0
+
+
+# Main training loop
+num_episodes = 1000
+num_frames = 4
+agent = DQNAgent(state_size=(84, 84), action_size=len(actions), batch_size=32, gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=10000, learning_rate=0.0001, memory_capacity=10000, target_update_freq=1000, num_frames=num_frames)
 
 for episode in range(num_episodes):
     print(f"========== EPISODE {episode + 1}/{num_episodes} ==========")
-    time.sleep(2.5)
-    take_action(5)
-    time.sleep(2.5)
-    take_action(5)
 
     screen, _ = capture_screen()
-    curr_score, last_score = 0, 0
-
+    last_score = 0
     if screen is None:
         logging.error("Skipping episode due to capture error")
         continue
-
-    state = preprocess_image(screen)
+    
+    stacked_frames = deque([preprocess_image(screen)] * num_frames, maxlen=num_frames)
+    state = torch.cat(list(stacked_frames)).unsqueeze(0).to(device)
+    
     total_reward = 0
 
     for t in range(10_000):
+
         t0 = time.perf_counter()
 
-        action = agent.select_action(state)
+        if t == 0:
+            time.sleep(2.5)
+            action = torch.tensor([[5]], device=device, dtype=torch.long)
+        else:
+            action = agent.select_action(state)
         take_action(action.item())
+
+
 
         next_screen, next_score_region = capture_screen()
         if next_screen is None:
             logging.error("Skipping step due to capture error")
-            break
-
+            continue
         curr_score = get_score(next_score_region, templates)
+
+
+
+
+        if curr_score: 
+            crashed = 0
+        else:
+            crashed += 1
+
+
+
+
+        if curr_score == 0 and t == 0:
+            crash_check.append(True)
+
+
         if curr_score == 0:
             crash_check.append(True)
             if last_score != 0:
                 break
         else:
             crash_check.clear()
-
-
         if len(crash_check) == 5:
             reset_game(GAME_PATH)
             break
-
+        
 
 
         reward = int(curr_score > last_score)
         last_score = curr_score
-
-        next_state = preprocess_image(next_screen)
-        done = is_gameover(next_state)
-
+        
+        next_state = stack_frames(stacked_frames, preprocess_image(next_screen), num_frames)
+        done = is_gameover(next_state[-1])
         if done:
-            reward = -10 
-            agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
-            break
-        print(f"Action: {actions[action.item()]}\tReward: {reward}\tCurrent Score: {curr_score}\t", end="")
-
+            reward = -10
+        
+        print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}", end="")
+        
         agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
         state = next_state
         total_reward += reward
+        
         agent.optimize_model()
-
         if t % agent.target_update_freq == 0:
             agent.update_target_network()
-
+        
         tf = time.perf_counter()
-        print(f"Time: {tf-t0}")
-
+        print(f"Time: {tf-t0:.4f} s")
+        
+        if done:
+            break
+    
     logging.info(f"Episode: {episode}, Total Reward: {total_reward}\n")
 
 logging.info("Training complete!")
-
-
