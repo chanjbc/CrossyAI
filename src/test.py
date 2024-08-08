@@ -26,29 +26,14 @@ import win32gui
 
 
 
-
-
-
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 gameover_template = torch.tensor(np.load("gameover.npy")).squeeze(0)
 
 
 
+# MARK: load_templates
 def load_templates():
-    """
-    Load the templates for the score.
-
-    This function loads the templates for the score by reading the PNG files from the assets directory.
-    It iterates over the range of 10 and constructs the file path for each template using the current index.
-    The template is then read using OpenCV's `imread` function with the flag `cv2.IMREAD_GRAYSCALE` to load it as a grayscale image.
-    The loaded template is appended to the `templates` list.
-    Finally, the function returns the list of templates.
-
-    Returns:
-        templates (List[np.ndarray]): A list of templates loaded from the assets directory.
-    """
     templates = []
     for i in range(10):
         template_path = os.path.join("..\\assets\\", f"{i}.png")
@@ -58,6 +43,7 @@ def load_templates():
 
 
 
+# MARK: capture_screen
 def capture_screen() -> list[np.ndarray]:
     with mss.mss() as sct:
 
@@ -133,7 +119,7 @@ def is_gameover(screen: torch.Tensor) -> bool:
 
 
 
-# get game score
+# MARK: get_score
 def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
     _, binary = cv2.threshold(screen, 1, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -144,21 +130,20 @@ def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
     wh_mask = np.where(screen < 255)
     screen[wh_mask] = 0
 
+    # identify islands
     vertical_projection = np.sum(screen, axis=0)
-
     gaps = np.where(vertical_projection > 0)[0]
-
     islands = []
     for k, g in groupby(enumerate(gaps), lambda ix: ix[0] - ix[1]):
         island = list(g)
         islands.append((island[0][1], island[-1][1] - island[0][1] + 1))
 
-
-    # Segment and save each digit
+    # segment digits and store in array
     digits = []
     for i, (start, width) in enumerate(islands):
         digits.append(screen[8:88, start:start + width - 1])
 
+    # iterate through 
     score = ""
     for digit in digits:
         for i, template in enumerate(templates):
@@ -166,12 +151,14 @@ def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
                 score += str(i)
 
     if len(score) == 0:
-        return 0
+        return -1
     else:
         return int(score)
 
 
 
+
+# MARK: take_action
 def take_action(action) -> None:
     global curr_score
     if action == 0:
@@ -209,7 +196,7 @@ def take_action(action) -> None:
 
 
 
-
+# MARK: reset_game
 def is_game_running(game_exe: str) -> bool:
     for proc in psutil.process_iter():
         try:
@@ -273,7 +260,7 @@ def reset_game(game_path: str) -> None:
 
 
 
-
+# MARK: QNetwork
 class QNetwork(nn.Module):
     def __init__(self, state_size, action_size, num_frames=4):
         super(QNetwork, self).__init__()
@@ -297,7 +284,7 @@ class QNetwork(nn.Module):
 
 
 
-
+# MARK: ReplayMemory
 class ReplayMemory:
     def __init__(self, capacity):
         self.memory = deque(maxlen=capacity)
@@ -316,7 +303,7 @@ class ReplayMemory:
 
 
     
-
+# MARK: DQNAgent
 class DQNAgent:
     def __init__(self, state_size, action_size, batch_size, gamma, epsilon, epsilon_min, epsilon_decay, learning_rate, memory_capacity, target_update_freq, num_frames=4):
         self.state_size = state_size
@@ -392,36 +379,38 @@ def stack_frames(stacked_frames, frame, num_frames=4):
 
 
 
-
-# hyperparameters
-state_size = (1, 84, 84)  # (channels, height, width)
-action_size = 5
-batch_size = 32
-gamma = 0.99
-epsilon = 1.0
-epsilon_min = 0.1
-epsilon_decay = 100
-learning_rate = 0.005
-memory_capacity = 10_000    
-target_update_freq = 10 
-num_frames = 4
-
-
-
-actions = ["up", "down", "left", "right", "wait"]
-
 templates = load_templates()
 
 load_dotenv()
 GAME_PATH = os.getenv("GAME_PATH")
-crashed = 0
 
 
-# Main training loop
-num_episodes = 1000
+
+# MARK: hyperparameters
+state_size = (1, 84, 84)  # (channels, height, width)
 num_frames = 4
-agent = DQNAgent(state_size=(84, 84), action_size=len(actions), batch_size=32, gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=10000, learning_rate=0.0001, memory_capacity=10000, target_update_freq=1000, num_frames=num_frames)
 
+actions = ["up", "down", "left", "right", "wait", "start"]
+action_size = 5
+
+gamma = 0.99
+epsilon = 1.0
+epsilon_min = 0.1
+epsilon_decay = 400
+learning_rate = 0.005
+memory_capacity = 10_000
+target_update_freq = 10 
+
+num_episodes = 10_000
+batch_size = 32
+
+best_score, best_ep = 0, 0
+agent = DQNAgent(state_size=(84, 84), action_size=len(actions)-1, batch_size=32, gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=10_000, learning_rate=0.0001, memory_capacity=10000, target_update_freq=1000, num_frames=num_frames)
+
+
+
+# MARK: training loop
+reset_game(GAME_PATH)
 for episode in range(num_episodes):
     print(f"========== EPISODE {episode + 1}/{num_episodes} ==========")
 
@@ -437,9 +426,9 @@ for episode in range(num_episodes):
     total_reward = 0
 
     for t in range(10_000):
-
         t0 = time.perf_counter()
 
+        # choose action
         if t == 0:
             time.sleep(2.5)
             action = torch.tensor([[5]], device=device, dtype=torch.long)
@@ -447,65 +436,51 @@ for episode in range(num_episodes):
             action = agent.select_action(state)
         take_action(action.item())
 
-
-
+        # capture next state/score/gameover region
         next_screen, next_score_region = capture_screen()
         if next_screen is None:
             logging.error("Skipping step due to capture error")
             continue
         curr_score = get_score(next_score_region, templates)
-
-
-
-
-        if curr_score: 
-            crashed = 0
-        else:
-            crashed += 1
-
-
-
-
-        if curr_score == 0 and t == 0:
-            crash_check.append(True)
-
-
-        if curr_score == 0:
-            crash_check.append(True)
-            if last_score != 0:
-                break
-        else:
-            crash_check.clear()
-        if len(crash_check) == 5:
-            reset_game(GAME_PATH)
-            break
-        
-
-
-        reward = int(curr_score > last_score)
-        last_score = curr_score
-        
         next_state = stack_frames(stacked_frames, preprocess_image(next_screen), num_frames)
         done = is_gameover(next_state[-1])
+
+        # track best score
+        if curr_score > best_score:
+            best_score, best_ep = curr_score, episode
+
+        # detect crash by negative score and not gameover event
+        if curr_score < 0 and not done:
+            time.sleep(2)
+            done = is_gameover(preprocess_image(capture_screen()[0]))
+            if not done:
+                logging.info("Crash detected. Resetting game...")
+                reset_game(GAME_PATH)
+                break
+        
+        # assign reward 
         if done:
             reward = -10
-        
-        print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}", end="")
-        
-        agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
-        state = next_state
+        else:
+            reward = int(curr_score > last_score)
+            last_score = curr_score
         total_reward += reward
         
+        # train model
+        agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
         agent.optimize_model()
         if t % agent.target_update_freq == 0:
             agent.update_target_network()
+        state = next_state
         
+        # print stats
         tf = time.perf_counter()
-        print(f"Time: {tf-t0:.4f} s")
+        print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}\tTime: {tf-t0:.4f} s")
         
         if done:
+            take_action(5)
             break
     
-    logging.info(f"Episode: {episode}, Total Reward: {total_reward}\n")
+    logging.info(f"Episode: {episode}, Total Reward: {total_reward}\nBest Run: {best_score} on episode {best_ep}\n")
 
-logging.info("Training complete!")
+logging.info("Training Complete!")
