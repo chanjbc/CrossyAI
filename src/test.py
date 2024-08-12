@@ -28,7 +28,7 @@ import win32gui
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-gameover_template = torch.tensor(np.load("gameover.npy")).squeeze(0)
+gameover_template = torch.load("gameover.pt")
 
 
 
@@ -46,7 +46,6 @@ def load_templates():
 # MARK: capture_screen
 def capture_screen() -> list[np.ndarray]:
     with mss.mss() as sct:
-
         # width of borders: 2px
         # height of Windows bar: 40px
         # height of taskbar: 60px 
@@ -57,47 +56,40 @@ def capture_screen() -> list[np.ndarray]:
             "height": 1340
         }))
         screen = screen[..., :3]
-        return [screen, np.dot(screen[22:120, 20:700, :3], [0.299, 0.587, 0.114]).astype(np.uint8)]
+        return [screen[340:1341, 138:1139], 
+                np.dot(screen[22:120, 20:700, :], [0.299, 0.587, 0.114]).astype(np.uint8)]
 
 
 
+# MARK: preprocessing
 # preprocess screen, returning both gamescreen and gameover buttons
 def preprocess_image(image: np.ndarray) -> torch.Tensor:
     try:
-        extract_gamescreen = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Grayscale(),
-            transforms.Resize((84, 84)),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
-        gamescreen = extract_gamescreen(image)
-        return gamescreen
+        grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        resized = cv2.resize(grayscale, (84, 84))
+        normalized = resized / 255.0
+        return torch.tensor(normalized)
     except Exception as e:
         logging.error("Error during image preprocessing: %s", e)
-        return None
 
 
 
-# preprocess screen, returning both gamescreen and gameover buttons
+# MARK: save_preprocessed_gameover
 def save_preprocessed_gameover(image: np.ndarray) -> None:
     try:
-        extract_gamescreen = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Grayscale(),
-            transforms.Resize((84, 84)),
-            transforms.Normalize((0.5,), (0.5,))
-        ])
-        gamescreen = extract_gamescreen(image)
-        gameover = gamescreen[:, 71:83, 12:74]
-        np.save("gameover.npy", gameover)
+        gameover = image[67:82, 4:82]
+        cv2.imshow("Gameover Region", gameover)
+        cv2.waitKey(0)
+        torch.save(torch.tensor(gameover), "gameover.pt")
     except Exception as e:
-        logging.error("Error during image preprocessing: %s", e)
-        return None
+        logging.error("Error during saving image: %s", e)
+# save_preprocessed_gameover(preprocess_image(capture_screen()[0]))
+
 
 
 
 # visualize preprocessed image
-def visualize_preprocessed(tensor: torch.Tensor) -> None:
+def visualize_preprocessed_tensor(tensor: torch.Tensor) -> None:
     try:
         # reverses the normalization: x = (x * std) + mean
         tensor = tensor * 0.5 + 0.5
@@ -109,13 +101,13 @@ def visualize_preprocessed(tensor: torch.Tensor) -> None:
 
 
 
-# checks if game is over
+
+# MARK: is_gameover
 def is_gameover(screen: torch.Tensor) -> bool:
-    screen = screen[:, 71:83, 12:74]
-    screen = screen.squeeze(0)
+    screen = screen[67:82, 4:82]
     err = torch.sum((gameover_template - screen) ** 2).item()
     err /= float(gameover_template.shape[0] * gameover_template.shape[1])
-    return err < 0.05
+    return err < 0.01
 
 
 
@@ -160,20 +152,17 @@ def get_score(screen: np.ndarray, templates: list[np.ndarray]) -> int:
 
 # MARK: take_action
 def take_action(action) -> None:
-    global curr_score
     if action == 0:
         pyautogui.press("up")
-        curr_score += 1
     elif action == 1:
         pyautogui.press("down")
-        curr_score -= 1
     elif action == 2:
         pyautogui.press("left")
     elif action == 3:
         pyautogui.press("right")
     elif action == 4:
-        time.sleep(0.1)
-    # used only for resetting game
+        time.sleep(0.2)
+    # action == 5 used only for resetting game
     elif action == 5: 
         pyautogui.press("space")
     else:
@@ -226,7 +215,6 @@ def move_game_left(hwnd: int) -> bool:
 def reset_game(game_path: str) -> None:
     game_name = game_path.split('\\')[-1].split(".")[0]
     game_exe = game_path.split('\\')[-1]
-
     while True:
         try:
             start_game(game_exe, game_path)
@@ -242,7 +230,6 @@ def reset_game(game_path: str) -> None:
                 }))
                 corner = corner[..., :3]
                 if np.all(corner == 255):
-                    print("Top-left corner is white")
                     pyautogui.hotkey("win", "left")
                     continue
             if is_game_running(game_exe) and is_game_front(game_name) and is_game_left(hwnd):
@@ -369,9 +356,9 @@ class DQNAgent:
 
 
 # Frame stacking function
-def stack_frames(stacked_frames, frame, num_frames=4):
+def stack_frames(stacked_frames: deque, frame: torch.tensor, num_frames=4):
     stacked_frames.append(frame)
-    return torch.cat(list(stacked_frames)).unsqueeze(0)
+    return torch.stack(list(stacked_frames), dim=0).unsqueeze(0)
 
 
 
@@ -380,14 +367,18 @@ def stack_frames(stacked_frames, frame, num_frames=4):
 
 
 templates = load_templates()
-
 load_dotenv()
 GAME_PATH = os.getenv("GAME_PATH")
 
 
 
+
+
+
+
+
 # MARK: hyperparameters
-state_size = (1, 84, 84)  # (channels, height, width)
+state_size = (84, 84)  # (channels, height, width)
 num_frames = 4
 
 actions = ["up", "down", "left", "right", "wait", "start"]
@@ -396,8 +387,8 @@ action_size = 5
 gamma = 0.99
 epsilon = 1.0
 epsilon_min = 0.1
-epsilon_decay = 400
-learning_rate = 0.005
+epsilon_decay = 1_000
+learning_rate = 0.06
 memory_capacity = 10_000
 target_update_freq = 10 
 
@@ -405,7 +396,7 @@ num_episodes = 10_000
 batch_size = 32
 
 best_score, best_ep = 0, 0
-agent = DQNAgent(state_size=(84, 84), action_size=len(actions)-1, batch_size=32, gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=10_000, learning_rate=0.0001, memory_capacity=10000, target_update_freq=1000, num_frames=num_frames)
+agent = DQNAgent(state_size=state_size, action_size=action_size, batch_size=batch_size, gamma=gamma, epsilon=epsilon, epsilon_min=epsilon_min, epsilon_decay=epsilon_decay, learning_rate=learning_rate, memory_capacity=memory_capacity, target_update_freq=target_update_freq, num_frames=num_frames)
 
 
 
@@ -414,16 +405,18 @@ reset_game(GAME_PATH)
 for episode in range(num_episodes):
     print(f"========== EPISODE {episode + 1}/{num_episodes} ==========")
 
+    # capture starting screen
     screen, _ = capture_screen()
     last_score = 0
+    total_reward = 0
     if screen is None:
         logging.error("Skipping episode due to capture error")
         continue
     
-    stacked_frames = deque([preprocess_image(screen)] * num_frames, maxlen=num_frames)
-    state = torch.cat(list(stacked_frames)).unsqueeze(0).to(device)
+    # initialize frame stack
+    stacked_frames = deque([preprocess_image(screen)]*num_frames, maxlen=num_frames)
+    state = stack_frames(stacked_frames, preprocess_image(screen))
     
-    total_reward = 0
 
     for t in range(10_000):
         t0 = time.perf_counter()
@@ -431,7 +424,7 @@ for episode in range(num_episodes):
         # choose action
         if t == 0:
             time.sleep(2.5)
-            action = torch.tensor([[5]], device=device, dtype=torch.long)
+            action = torch.tensor([[0]], device=device, dtype=torch.long)
         else:
             action = agent.select_action(state)
         take_action(action.item())
@@ -442,8 +435,8 @@ for episode in range(num_episodes):
             logging.error("Skipping step due to capture error")
             continue
         curr_score = get_score(next_score_region, templates)
-        next_state = stack_frames(stacked_frames, preprocess_image(next_screen), num_frames)
-        done = is_gameover(next_state[-1])
+        next_state = stack_frames(stacked_frames, preprocess_image(next_screen))
+        done = is_gameover(next_state[-1][-1])
 
         # track best score
         if curr_score > best_score:
@@ -477,6 +470,7 @@ for episode in range(num_episodes):
         tf = time.perf_counter()
         print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}\tTime: {tf-t0:.4f} s")
         
+        # reset if gameover
         if done:
             take_action(5)
             break
@@ -484,3 +478,6 @@ for episode in range(num_episodes):
     logging.info(f"Episode: {episode}, Total Reward: {total_reward}\nBest Run: {best_score} on episode {best_ep}\n")
 
 logging.info("Training Complete!")
+
+if __name__ == "main":
+    main()
