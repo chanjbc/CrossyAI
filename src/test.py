@@ -66,11 +66,14 @@ def capture_screen() -> list[np.ndarray]:
 def preprocess_image(image: np.ndarray) -> torch.Tensor:
     try:
         grayscale = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(grayscale, (84, 84))
+        edges = cv2.Canny(grayscale, threshold1=100, threshold2=125)
+        resized = cv2.resize(edges, (84, 84), interpolation=cv2.INTER_AREA)
         normalized = resized / 255.0
-        return torch.tensor(normalized)
-    except Exception as e:
-        logging.error("Error during image preprocessing: %s", e)
+        tensor_for_dqn = torch.tensor(normalized, dtype=torch.float32)
+        return tensor_for_dqn
+    except:
+        pass
+
 
 
 
@@ -83,8 +86,7 @@ def save_preprocessed_gameover(image: np.ndarray) -> None:
         torch.save(torch.tensor(gameover), "gameover.pt")
     except Exception as e:
         logging.error("Error during saving image: %s", e)
-# save_preprocessed_gameover(preprocess_image(capture_screen()[0]))
-
+# save_preprocessed_gameover(np.array(preprocess_image(capture_screen()[0])))
 
 
 
@@ -107,7 +109,7 @@ def is_gameover(screen: torch.Tensor) -> bool:
     screen = screen[67:82, 4:82]
     err = torch.sum((gameover_template - screen) ** 2).item()
     err /= float(gameover_template.shape[0] * gameover_template.shape[1])
-    return err < 0.01
+    return err < 0.0015
 
 
 
@@ -352,14 +354,10 @@ class DQNAgent:
 
 
 
-
-
-
-# Frame stacking function
+# MARK: stack_frames
 def stack_frames(stacked_frames: deque, frame: torch.tensor, num_frames=4):
     stacked_frames.append(frame)
     return torch.stack(list(stacked_frames), dim=0).unsqueeze(0)
-
 
 
 
@@ -370,114 +368,108 @@ templates = load_templates()
 load_dotenv()
 GAME_PATH = os.getenv("GAME_PATH")
 
+def main():
+    reset_game(GAME_PATH)
+
+    # MARK: hyperparameters
+    state_size = (84, 84)  # (channels, height, width)
+    num_frames = 4
+    num_episodes = 10_000
+    batch_size = 32
+    actions = ["up", "down", "left", "right", "wait", "start"]
+    action_size = 5
+    gamma = 0.99
+    epsilon = 1.0
+    epsilon_min = 0.1
+    epsilon_decay = 5_000
+    learning_rate = 0.01
+    memory_capacity = 10_000
+    target_update_freq = 10 
+
+    best_score, best_ep = 0, 0
+    agent = DQNAgent(state_size=state_size, action_size=action_size, batch_size=batch_size, gamma=gamma, epsilon=epsilon, epsilon_min=epsilon_min, epsilon_decay=epsilon_decay, learning_rate=learning_rate, memory_capacity=memory_capacity, target_update_freq=target_update_freq, num_frames=num_frames)
 
 
 
+    # MARK: training loop
+    for episode in range(num_episodes):
+        print(f"========== EPISODE {episode + 1}/{num_episodes} ==========")
 
-
-
-
-# MARK: hyperparameters
-state_size = (84, 84)  # (channels, height, width)
-num_frames = 4
-
-actions = ["up", "down", "left", "right", "wait", "start"]
-action_size = 5
-
-gamma = 0.99
-epsilon = 1.0
-epsilon_min = 0.1
-epsilon_decay = 1_000
-learning_rate = 0.06
-memory_capacity = 10_000
-target_update_freq = 10 
-
-num_episodes = 10_000
-batch_size = 32
-
-best_score, best_ep = 0, 0
-agent = DQNAgent(state_size=state_size, action_size=action_size, batch_size=batch_size, gamma=gamma, epsilon=epsilon, epsilon_min=epsilon_min, epsilon_decay=epsilon_decay, learning_rate=learning_rate, memory_capacity=memory_capacity, target_update_freq=target_update_freq, num_frames=num_frames)
-
-
-
-# MARK: training loop
-reset_game(GAME_PATH)
-for episode in range(num_episodes):
-    print(f"========== EPISODE {episode + 1}/{num_episodes} ==========")
-
-    # capture starting screen
-    screen, _ = capture_screen()
-    last_score = 0
-    total_reward = 0
-    if screen is None:
-        logging.error("Skipping episode due to capture error")
-        continue
-    
-    # initialize frame stack
-    stacked_frames = deque([preprocess_image(screen)]*num_frames, maxlen=num_frames)
-    state = stack_frames(stacked_frames, preprocess_image(screen))
-    
-
-    for t in range(10_000):
-        t0 = time.perf_counter()
-
-        # choose action
-        if t == 0:
-            time.sleep(2.5)
-            action = torch.tensor([[0]], device=device, dtype=torch.long)
-        else:
-            action = agent.select_action(state)
-        take_action(action.item())
-
-        # capture next state/score/gameover region
-        next_screen, next_score_region = capture_screen()
-        if next_screen is None:
-            logging.error("Skipping step due to capture error")
+        # capture starting screen
+        screen, _ = capture_screen()
+        last_score = 0
+        total_reward = 0
+        if screen is None:
+            logging.error("Skipping episode due to capture error")
             continue
-        curr_score = get_score(next_score_region, templates)
-        next_state = stack_frames(stacked_frames, preprocess_image(next_screen))
-        done = is_gameover(next_state[-1][-1])
+        
+        # initialize frame stack
+        stacked_frames = deque([preprocess_image(screen)]*num_frames, maxlen=num_frames)
+        state = stack_frames(stacked_frames, preprocess_image(screen))
+        
 
-        # track best score
-        if curr_score > best_score:
-            best_score, best_ep = curr_score, episode
+        for t in range(10_000):
+            t0 = time.perf_counter()
 
-        # detect crash by negative score and not gameover event
-        if curr_score < 0 and not done:
-            time.sleep(2)
-            done = is_gameover(preprocess_image(capture_screen()[0]))
-            if not done:
-                logging.info("Crash detected. Resetting game...")
-                reset_game(GAME_PATH)
+            # choose action
+            if t == 0:
+                time.sleep(2.5)
+                action = torch.tensor([[0]], device=device, dtype=torch.long)
+            else:
+                action = agent.select_action(state)
+            take_action(action.item())
+
+            # capture next state/score/gameover region
+            next_screen, next_score_region = capture_screen()
+            if next_screen is None:
+                logging.error("Skipping step due to capture error")
+                continue
+            curr_score = get_score(next_score_region, templates)
+            next_state = stack_frames(stacked_frames, preprocess_image(next_screen))
+            done = is_gameover(next_state[-1][-1])
+
+            # track best score
+            if curr_score > best_score:
+                best_score, best_ep = curr_score, episode
+
+            # detect crash by negative score and not gameover event
+            if curr_score < 0 and not done:
+                time.sleep(2)
+                done = is_gameover(preprocess_image(capture_screen()[0]))
+                if not done:
+                    logging.info("Crash detected. Resetting game...")
+                    reset_game(GAME_PATH)
+                    break
+            
+            # assign reward 
+            if done:
+                reward = -10
+            else:
+                reward = int(curr_score > last_score)
+                last_score = curr_score
+            total_reward += reward
+            
+            # train model
+            agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
+            agent.optimize_model()
+            if t % agent.target_update_freq == 0:
+                agent.update_target_network()
+            state = next_state
+            
+            # print stats
+            tf = time.perf_counter()
+            print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}\tTime: {tf-t0:.4f} s")
+            
+            # reset if gameover
+            if done:
+                take_action(5)
                 break
         
-        # assign reward 
-        if done:
-            reward = -10
-        else:
-            reward = int(curr_score > last_score)
-            last_score = curr_score
-        total_reward += reward
-        
-        # train model
-        agent.memory.push(state, action, torch.tensor([[reward]], device=device), next_state, torch.tensor([[done]], device=device, dtype=torch.uint8))
-        agent.optimize_model()
-        if t % agent.target_update_freq == 0:
-            agent.update_target_network()
-        state = next_state
-        
-        # print stats
-        tf = time.perf_counter()
-        print(f"Action: {actions[action.item()]}\tCurrent Score: {curr_score}\tReward: {reward}\tEps Threshold: {agent.eps_threshold:.3f}\tTime: {tf-t0:.4f} s")
-        
-        # reset if gameover
-        if done:
-            take_action(5)
-            break
-    
-    logging.info(f"Episode: {episode}, Total Reward: {total_reward}\nBest Run: {best_score} on episode {best_ep}\n")
+        logging.info(f"Episode: {episode}, Total Reward: {total_reward}\nBest Run: {best_score} on episode {best_ep}\n")
 
-logging.info("Training Complete!")
+    logging.info("Training Complete!")
 
-if __name__ == "main":
+
+
+if __name__ == "__main__":
     main()
